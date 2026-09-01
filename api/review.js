@@ -40,8 +40,10 @@ export default async function handler(req, res) {
   const MODEL = "gemini-3.6-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
-  try {
-    const geminiRes = await fetch(url, {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function callGemini() {
+    return fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -56,13 +58,28 @@ export default async function handler(req, res) {
         },
       }),
     });
+  }
+
+  try {
+    let geminiRes = await callGemini();
+
+    // 503 = 모델이 일시적으로 과부하 상태. 짧게 대기 후 최대 2번까지 재시도.
+    let attempts = 1;
+    while (!geminiRes.ok && geminiRes.status === 503 && attempts < 3) {
+      await sleep(900 * attempts);
+      geminiRes = await callGemini();
+      attempts += 1;
+    }
 
     if (!geminiRes.ok) {
       const detail = await geminiRes.text();
       console.error("Gemini API error:", detail);
-      // 429 = 무료 한도 초과(분당/일일). 사용자에게 그대로 안내.
       if (geminiRes.status === 429) {
         res.status(429).json({ error: "지금 요청이 많아 잠시 제한됐어요. 1분 후 다시 시도해주세요." });
+        return;
+      }
+      if (geminiRes.status === 503) {
+        res.status(503).json({ error: "지금 무료 모델에 요청이 몰려있어요. 잠시 후 다시 시도해주세요." });
         return;
       }
       res.status(502).json({ error: "AI 응답을 받아오지 못했습니다." });
